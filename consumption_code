@@ -1,0 +1,369 @@
+
+ 
+/*-IMPORTACAO DO LCD COM I2C*/
+#include <Wire.h>
+#include <DS1307RTC.h> 
+#include <LiquidCrystal_I2C.h>
+#include <TimeLib.h>  
+#include <RTClib.h>
+#include <SD.h>
+#include <SPI.h>
+
+RTC_DS1307 rtc; 
+File file;                  // ponteiro para arquivo
+const int Pino_CS = 10;
+
+ 
+/*DECLARACAO CONSTANTES DO LCD*/
+//LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);  // Set the LCD I2C address
+LiquidCrystal_I2C lcd(0x27,20,4); // Set the LCD I2C address  
+ 
+//PINO DO SENSOR ACS712 PARA A CARGA
+int sensorACS712_Carga = A0;
+ 
+// PINO DO SENSOR DE TENSAO ANALÓGICA(A2) UTILIZADA PELO SENSOR DE TENSÃO PARA A CARGA
+int sensorTensaoDC = A1;
+
+//PINO DO SENSOR ACS712 PARA OS PAINEIS
+int sensorACS712_Painel = A2;
+
+// PINO DO SENSOR DE TENSAO ANALÓGICA(A2) UTILIZADA PELO SENSOR DE TENSÃO PARA OS PAINEIS
+//int sensorTensaoDC_Painel = A3;
+
+ 
+// DECLARAÇÃO DE VARIÁVEL QUE RECEBE O VALOR LIDO NA PORTA ANALÓGICA A1 E A3
+float valorTensaoDC;
+//float valorTensaoDC_Painel;
+ 
+// DECLARAÇÃO DA VARIÁVEL DA MEDIA DE AMOSTRAGEM
+int amostragem =1000;
+ 
+// DECLARAÇÃO DA VARIÁVEL DA SOMA DA MEDIA DE AMOSTRAGEM
+float mediaTotalTensaoDC = 0;
+//float mediaTotalTensaoDC_Painel =0;
+ 
+// DECLARAÇÃO DE VARIÁVEL QUE RECEBE O VALOR FINAL CONVERTIDO EM VOLTS DC
+float valorFinalTensaoDC = 0;
+//float valorFinalTensaoDC_Painel = 0;
+ 
+//VARIAVEIS COM OS VALORES DOS RESISTORES DO SENSOR DE TENSÃO DC: Medir os resistores!
+float R1 = 29900.0;  
+float R2 = 7400.0;
+ 
+// DECLARAÇÃO DA VARIÁVEL AUXILIAR
+int sensorValue_aux_Carga = 0;
+int sensorValue_aux_Painel = 0;
+ 
+// DECLARAÇÃO DA VARIÁVEL QUE FARÁ LEIUTURA DIRETO NO SENSOR ACS712
+float valorSensorACS712_Carga = 0;
+float valorSensorACS712_Painel = 0;
+ 
+// DECLARAÇÃO DA VARIÁVEL QUE FARÁ LEIUTURA DE CORRENTE
+float valorCorrente_Carga = 0;
+float valorCorrente_Painel = 0;
+ 
+// DECLARAÇÃO DA VARIÁVEL DA CONSTANTE DO ADC 5/1023
+float voltsporUnidade = 0.004887586;// 5%1023
+ 
+//DECLARAÇÃO DA VARIÁVEL DE SENSIBILIDADE DO ACS712
+// Para ACS712 de  5 Amperes use 0.185
+// Para ACS712 de  20 Amperes use 0.100
+// Para ACS712 de 30 Amperes use 0.066
+
+float sensibilidade = 0.066;
+ 
+//DECLARAÇÃO DA VARIÁVEL DE DESVIO DO ACS712 (OPCIONAL)
+float desvioACS712 = 0.045;
+ 
+void setup(){
+  //VALOR REFERENCIAL
+  analogReference(DEFAULT);
+ 
+ // INICIALIZA A PORTA SERIAL
+  Serial.begin(9600);
+  rtc.begin();
+  Wire.begin();
+
+  //Verifica as condicoes do RTC  
+  if (! rtc.begin()){
+    Serial.println("RTC nao encontrado!");
+    while (1);  
+  }  
+
+  //ajusta aqui a data e horario antes de carregar!!Descomentar a linha apos isso
+  rtc.adjust(DateTime(2020, 05, 03, 12, 48, 0));  //}
+ 
+ // DECLARA QUE A PORTA DO SENSOR DE TENSAO DC
+  pinMode(sensorTensaoDC, INPUT);
+  //pinMode(sensorTensaoDC_Painel, INPUT);
+ 
+  //PINO SENSOR DE CORRENTE ACS712
+  pinMode(sensorACS712_Carga, INPUT);
+  pinMode(sensorACS712_Painel, INPUT);
+ 
+ //INICIA O LCD DE 20 CARACTERES POR 4 LINHAS
+  lcd.begin(20,4);  
+ 
+  //LIGA LUZ DE FUNDO
+  lcd.backlight();  
+ 
+ // Cartão 
+  Serial.println("Iniciando cartao SD...");
+  if (!SD.begin(Pino_CS))  {
+    Serial.println("Falha na inicializacao do SD!");
+    return;  }
+  Serial.println("Cartao SD iniciado. OK");  
+  Serial.println();
+
+// cabeçalho
+    file = SD.open("data.log", FILE_WRITE);
+    file.println("date-time, , tensao, corrente_carga, potencia_carga, corrente_painel, potencia_painel ");
+    file.close();
+
+  
+  delay(500);
+}
+ 
+void loop() {
+ 
+ 
+ //REINICIA O VALOR ATUAL E ATUALIZA NA PRÓXIMA LEITURA
+  valorSensorACS712_Carga = 0;
+  valorSensorACS712_Painel = 0;
+  
+ 
+ //REINICIA O VALOR ATUAL E ATUALIZA NA PRÓXIMA LEITURA
+  valorFinalTensaoDC = 0;
+  //valorFinalTensaoDC_Painel = 0;
+ 
+  //REINICIA O VALOR ATUAL E ATUALIZA NA PRÓXIMA LEITURA
+  mediaTotalTensaoDC = 0;
+  //mediaTotalTensaoDC_Painel = 0;
+ 
+  //INICIA A AQUISIÇÃO DOS VALORES PARA MEDIR A CORRENTE CONSUMIDA
+  //INICIA A AQUISIÇÃO DOS VALORES PARA MEDIR A TENSÃO CONSUMIDA
+    for(int i=0; i < amostragem ; i++){
+      // le o sensor na pino analogico A0 e ajusta o valor lido ja que a saída do sensor é
+      //(1023)vcc/2 para corrente =0
+      sensorValue_aux_Carga = (analogRead(sensorACS712_Carga) - 511.5);
+      sensorValue_aux_Painel = (analogRead(sensorACS712_Painel) - 511.5);
+     
+      // somam os quadrados das leituras (É valido para DC e AC).
+      valorSensorACS712_Carga += pow(sensorValue_aux_Carga,2);
+      valorSensorACS712_Painel += pow(sensorValue_aux_Painel,2);
+     
+      //-----------------CORRENTE DC---------------------------------------
+      //Somente para medir corrente DC
+      ///valorSensorACS712 += sensorValue_aux ;
+     
+     
+   //LEITURA DO VALOR NA PORTA ANALÓGICA(VARIA DE 0 ATÉ 1023)
+    valorTensaoDC = analogRead(sensorTensaoDC);
+    //valorTensaoDC_Painel = analogRead(sensorTensaoDC_Painel);
+
+    
+    //CALCULA O VALOR A PARTIR DA RESOLUÇÃO DO ADC
+    valorTensaoDC =(valorTensaoDC*voltsporUnidade);
+    //valorTensaoDC_Painel =(valorTensaoDC_Painel*voltsporUnidade);
+
+    
+    //INCLUE NO CALCULO OS VALORES DO DIVISOR DE TENSÃO
+    mediaTotalTensaoDC = mediaTotalTensaoDC + (valorTensaoDC / (R2/(R1+R2)));
+    //mediaTotalTensaoDC_Painel = mediaTotalTensaoDC_Painel + (valorTensaoDC_Painel / (R2/(R1+R2)));
+     
+      //UM PEQUENO INTERVALO ENTRE AS LEITURAS
+      delay(1);
+  }
+ 
+ // CALCULO QUE MEDE A CORRENTE MÉDIA
+ // finaliza o calculo da méida quadratica e ajusta o valor lido para volts
+  valorSensorACS712_Carga = (sqrt(valorSensorACS712_Carga/ amostragem)) * voltsporUnidade;
+  valorSensorACS712_Painel = (sqrt(valorSensorACS712_Painel/ amostragem)) * voltsporUnidade;
+ 
+  //-----------------CORRENTE DC---------------------------------------
+  //Somente para medir corrente DC
+  //valorSensorACS712 = (valorSensorACS712/ amostragem) * voltsporUnidade;
+ 
+  // calcula a corrente considerando a sensibilidade do sensor (66 mV por amper)
+  valorCorrente_Carga = (valorSensorACS712_Carga/sensibilidade);
+  valorCorrente_Painel = (valorSensorACS712_Painel/sensibilidade);
+ 
+ 
+ 
+   //CASO A CORRENTE OU TENSAO SEJA NULA (ZERO)
+   //NAO IMPRIME A POTENCIA (WATTS)
+   if(valorCorrente_Carga <= desvioACS712){
+     valorCorrente_Carga =0;
+   }
+
+   if(valorCorrente_Painel <= desvioACS712){
+     valorCorrente_Painel =0;
+   }
+ 
+
+   //RETIRA A MEDIA DOS VALORES DE LEITURA
+   valorFinalTensaoDC = mediaTotalTensaoDC / amostragem;
+   //valorFinalTensaoDC_Painel = mediaTotalTensaoDC_Painel / amostragem;
+
+
+ tmElements_t tm;
+  String dataString = "";
+  if (RTC.read(tm)) {
+    dataString += tmYearToCalendar(tm.Year);
+    dataString += '-';
+    dataString += tm.Month;
+    dataString += '-';
+    dataString += tm.Day;
+    dataString += ' ';
+    dataString += tm.Hour;
+    dataString += ':';
+    dataString += tm.Minute;
+    dataString += ':';
+    dataString += tm.Second;
+    dataString += ',';
+    dataString += valorFinalTensaoDC;  
+    dataString += ',';
+    dataString += valorCorrente_Carga;
+    dataString += ',';
+    dataString += valorCorrente_Carga * valorFinalTensaoDC;
+    dataString += ',';
+    dataString += valorCorrente_Painel;
+    dataString += ',';
+    dataString += valorCorrente_Painel * valorFinalTensaoDC;
+
+
+    
+    
+    Serial.println(dataString);
+    file = SD.open("data.log", FILE_WRITE);
+    file.println(dataString);
+    file.close();
+    }
+  
+      
+  //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+  Serial.print("LEITURA DE: ");
+  //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+  Serial.print(valorFinalTensaoDC);
+  //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+  Serial.println(" VOLTS");
+ 
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.print("Leitura: ");
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.print(valorCorrente_Carga);
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.println(" Amp NA CARGA");
+
+  
+ 
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.print("Leitura: ");
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.print(valorCorrente_Painel);
+   //SAÍDA NA JANELA COM INFORMAÇÕES DA PORTA SERIAL
+   Serial.println(" Amp DOS PAINEIS");
+
+   
+    Serial.print("POTENCIA_CONSUMIDA :");
+    Serial.print(valorCorrente_Carga * valorFinalTensaoDC);
+    Serial.println(" WATTS");
+
+    Serial.print("POTENCIA_GERADA :");
+    Serial.print(valorCorrente_Painel * valorFinalTensaoDC);
+    Serial.println(" WATTS");
+ 
+ 
+
+ 
+  //LIMPA O DISPLAY DO LCD
+  lcd.clear();
+ 
+  //POSICIONA NA PRIMEIRA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A TENSAO
+  lcd.setCursor(0,0);
+  //ESCREVE
+  lcd.print("TENSAO :");
+  lcd.print(valorFinalTensaoDC ,1);
+  lcd.print(" V");
+   
+ 
+  //POSICIONA NA SEGUNDA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A CORRENTE
+ 
+  lcd.setCursor(0,1);
+  //ESCREVE
+  lcd.print("CORRENTE_C :");
+  lcd.print(valorCorrente_Carga);
+  lcd.print(" A");
+
+  //aguarda 5 segundos
+  delay(5000);
+
+  //LIMPA O DISPLAY DO LCD
+  lcd.clear();
+ 
+  //POSICIONA NA PRIMEIRA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A TENSAO
+  lcd.setCursor(0,0);
+  //ESCREVE
+  lcd.print("TENSAO :");
+  lcd.print(valorFinalTensaoDC ,1);
+  lcd.print(" V");
+   
+ 
+  //POSICIONA NA SEGUNDA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A CORRENTE
+ 
+  lcd.setCursor(0,1);
+  //ESCREVE
+  lcd.print("CORRENTE_P :");
+  lcd.print(valorCorrente_Painel);
+  lcd.print(" A");
+
+  //aguarda 5 segundos
+  delay(5000);
+
+ //LIMPA O DISPLAY DO LCD
+  lcd.clear();
+ 
+  //POSICIONA NA PRIMEIRA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A POTENCIA CONSUMIDA
+  lcd.setCursor(0,0);
+  //ESCREVE
+  lcd.print("POT_C :");
+  lcd.print(valorFinalTensaoDC * valorCorrente_Carga,1);
+  lcd.print(" W");
+   
+ 
+  //POSICIONA NA SEGUNDA LINHA E PRIMEIRA COLUNA
+  //IMPRIME A POTENCIA GERADA
+ 
+  lcd.setCursor(0,1);
+  //ESCREVE
+  lcd.print("POT_P :");
+  lcd.print(valorFinalTensaoDC * valorCorrente_Painel,1);
+  lcd.print(" W");
+  
+  //aguarda 5 segundos
+  delay(5000);
+ 
+
+
+ 
+  // if((valorCorrente > 0) && (valorFinalTensaoDC > 1.15)){
+      // IMPRIME POTENCIA CONSUMIDA
+      // lcd.setCursor(0,2);
+      //ESCREVE
+      // lcd.print("POTENCIA :");
+      // lcd.print(valorCorrente * valorFinalTensaoDC);
+       
+      // lcd.setCursor(0,3);
+      // lcd.print(" WATTS");
+       
+      
+   
+   
+  
+ delay(1000);
+}
